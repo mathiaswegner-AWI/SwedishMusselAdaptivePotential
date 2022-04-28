@@ -9,7 +9,6 @@ This markdown file covers the analyses used in Ventura A., Wegner K.M.,
 Dupont S. “Assessing adaptation potential to ocean acidification in blue
 mussels, Mytilus edulis, from the Swedish west coast”
 
-## Read Data
 
 ## Larval size
 
@@ -24,9 +23,8 @@ the best fitting model based on the respective Deviance Information
 Criterion (DIC). Only undeformed animals were used.
 
 #test for normality
-
-``` 
-![](README_files/figure-gfm/LengthModels%20normality-1.png)<!-- -->
+ 
+![](/README_files/figure-gfm/LengthModels%20normality-1.png)<!-- -->
 
 ``` r
 #within pH 7.5
