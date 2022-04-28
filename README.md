@@ -26,7 +26,7 @@ Criterion (DIC). Only undeformed animals were used.
 #test for normality
 
 ``` 
-![](/README_files/figure-gfm/LengthModels%20normality-1.png)<!-- -->
+![](README_files/figure-gfm/LengthModels%20normality-1.png)<!-- -->
 
 ``` r
 #within pH 7.5
