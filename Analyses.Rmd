@@ -1,0 +1,527 @@
+---
+title: "SwedishMusselAdaptivePotential"
+knit: (function(input_file, encoding) {
+  out_dir <- '/';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'README.md'))})
+author: "Mathias Wegner, AWI"
+date: "31/03/2022"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# SwedishMusselAdaptivePotential
+This markdown file covers the analyses used in Ventura A., Wegner K.M., Dupont S. "Assessing adaptation potential to ocean acidification in blue mussels, Mytilus edulis, from the Swedish west coast" 
+
+```{r functions, include = F}
+library(MCMCglmm)
+library(tidyverse)
+library(gridExtra)
+
+######################################################################################################
+##      Global variables
+######################################################################################################
+iterations.g = 10000000
+burnin.g = 1000000
+thin.g = 500
+
+######################################################################################################
+# MCMCglmm gaussian
+# model is a gaussian GLMM with Length as response
+# the function will run 3 models to test for differences between cultures and batches:
+# model1: deformed ~ pH, random = ~animal + culture + Block
+# model2: deformed ~ pH, random = ~animal + culture 
+# model3: deformed ~ pH, random = ~animal 
+
+
+makeMCMC_gaussian_with_pH <- function(thisData) #this function tests for differences in growth between pH environments with random slopes
+{
+	iterations = iterations.g
+	burnin = burnin.g
+	thin = thin.g
+	
+	thisData$ID = thisData$Individual
+	
+	#standardize Length
+	thisData$Length = thisData$Length/sd(thisData$Length)
+	
+	#make pedigree for animal model
+	SIRE =as.character(thisData$Sire)
+	lSIRE = length(levels(as.factor(SIRE)))
+	DAM =as.character(thisData$Dam)
+	lDAM =length(levels(as.factor(DAM)))
+	ID =c(levels(as.factor(DAM)),levels(as.factor(SIRE)),as.character(thisData$ID))
+	SIRE = c(rep(NA,(lSIRE+lDAM)),SIRE)
+	DAM =c(rep(NA,(lSIRE+lDAM)),DAM)
+
+	thisData$animal = thisData$ID
+		
+	pedigree = cbind(ID,SIRE,DAM)
+			
+	#make weak, but informative priors for the fixed effect and a fixed matrix for the residual variance, because that needs to be fixed for binomial models
+	prior1 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002),G4=list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior1_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002),G4=list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior1_RS_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = diag(2), nu = 0.002), G3 =list(V = 1, nu = 0.002),G4=list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	
+	prior2 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior2_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	
+	prior3 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior4 <- list(G = list(G1 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	
+	#run MCMCglmm fitting random intercepts for animal, Culture and Block 
+	model1=MCMCglmm(Length ~ pH, random = ~animal+Dam+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1) 
+	model1_RS=MCMCglmm(Length ~ pH, random = ~us(pH):animal+Dam+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1_RS) 
+	model1_RS_RS=MCMCglmm(Length ~ pH, random = ~us(pH):animal+us(pH):Dam+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1_RS_RS) 
+	
+	
+	model2_RS=MCMCglmm(Length ~ pH, random = ~us(pH):animal+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior2_RS) 	
+	model2=MCMCglmm(Length ~ pH, random = ~animal+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior2) 	
+	
+	model3=MCMCglmm(Length ~ pH, random = ~animal+Block ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior3) 	
+	model4=MCMCglmm(Length ~ pH, random = ~animal ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4) 	
+	
+	modelList =list(model1,model1_RS,model1_RS_RS,model2,model2_RS,model3,model4)
+	
+	return(modelList)
+}
+
+#this function tests for differences in growth within pH environments
+makeMCMC_gaussian <- function(thisData) 
+{
+	iterations = iterations.g
+	burnin = burnin.g
+	thin = thin.g
+	
+	thisData$ID = thisData$Individual
+	
+	#standardize Length
+	thisData$Length = thisData$Length/sd(thisData$Length)
+	
+	#make pedigree for animal model
+	SIRE =as.character(thisData$Sire)
+	lSIRE = length(levels(as.factor(SIRE)))
+	DAM =as.character(thisData$Dam)
+	lDAM =length(levels(as.factor(DAM)))
+	ID =c(levels(as.factor(DAM)),levels(as.factor(SIRE)),as.character(thisData$ID))
+	SIRE = c(rep(NA,(lSIRE+lDAM)),SIRE)
+	DAM =c(rep(NA,(lSIRE+lDAM)),DAM)
+
+	thisData$animal = thisData$ID
+		
+	pedigree = cbind(ID,SIRE,DAM)
+			
+	#make weak, but informative priors for the fixed effect and a fixed matrix for the residual variance, because that needs to be fixed for binomial models
+	prior1 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002),G4=list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior2 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior3 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	prior4 <- list(G = list(G1 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002))
+	
+	#run MCMCglmm fitting random intercepts for animal, Culture and Block 
+	model1=MCMCglmm(Length ~ 1, random = ~animal+Dam+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1) 
+	model2=MCMCglmm(Length ~ 1, random = ~animal+Block+Culture ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior2) 	
+	
+	model3=MCMCglmm(Length ~ 1, random = ~animal+Block ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior3) 	
+	model4=MCMCglmm(Length ~ 1, random = ~animal ,family="gaussian",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4) 	
+	
+	modelList =list(model1,model2,model3,model4)
+	
+	return(modelList)
+}
+
+#this function tests for differences in deformation rates between pH environments 
+makeMCMC_binomial <- function(thisData) 
+{
+	iterations = iterations.g
+	burnin = burnin.g
+	thin = thin.g
+
+	
+	thisData$ID = thisData$Individual
+	
+	#make pedigree for animal model
+	SIRE =as.character(thisData$Sire)
+	lSIRE = length(levels(as.factor(SIRE)))
+	DAM =as.character(thisData$Dam)
+	lDAM =length(levels(as.factor(DAM)))
+	ID =c(levels(as.factor(DAM)),levels(as.factor(SIRE)),as.character(thisData$ID))
+	SIRE = c(rep(NA,(lSIRE+lDAM)),SIRE)
+	DAM =c(rep(NA,(lSIRE+lDAM)),DAM)
+
+	thisData$animal = thisData$ID
+		
+	pedigree = cbind(ID,SIRE,DAM)
+			
+	#make weak, but informative priors for the fixed effect and a fixed matrix for the residual variance, because that needs to be fixed for binomial models
+	prior1 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior1_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	prior2 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior3 <- list(G = list(G1 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	prior4 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002),G4 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior4_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002),G4 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior4_RS_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = diag(2), nu = 0.002), G3 =list(V = 1, nu = 0.002),G4 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	#run MCMCglmm fitting random intercepts for animal, Culture and Block 
+	model1=MCMCglmm(Malformed ~ pH, random = ~animal+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1) 	
+	model1_RS = MCMCglmm(Malformed ~ pH, random = ~us(pH):animal+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior1_RS) 
+	model2=MCMCglmm(Malformed ~ pH, random = ~animal+Block ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior2) 	
+	model3=MCMCglmm(Malformed ~ pH, random = ~animal ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior3) 	
+	model4 = MCMCglmm(Malformed ~ pH, random = ~animal+Dam+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4)
+	model4_RS = MCMCglmm(Malformed ~ pH, random = ~us(pH):animal+Dam+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4_RS)
+	model4_RS_RS = MCMCglmm(Malformed ~ pH, random = ~us(pH):animal+us(pH):Dam+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4_RS_RS)
+	model4_RI_RS = MCMCglmm(Malformed ~ pH, random = ~us(pH):Dam+animal+Block+Culture ,family="categorical",data = thisData,verbose = FALSE,pedigree = pedigree, nit = iterations, burnin = burnin, thin = thin, prior = prior4_RS)
+
+	
+	
+	modelList =list(model1,model1_RS,model2,model3,model4,model4_RS,model4_RS_RS,model4_RI_RS)
+	
+	return(modelList)
+}
+
+
+#this function tests for differences in deformation rates between pH environments
+makeMCMC_binomial_surv <- function(thisData)  
+{
+	iterations = iterations.g
+	burnin = burnin.g
+	thin = thin.g
+
+	
+	#make pedigree for animal model
+	SIRE =as.character(thisData$Sire)
+	lSIRE = length(levels(as.factor(SIRE)))
+	DAM =as.character(thisData$Dam)
+	lDAM =length(levels(as.factor(DAM)))
+	ID =c(levels(as.factor(DAM)),levels(as.factor(SIRE)),as.character(thisData$ID))
+	SIRE = c(rep(NA,(lSIRE+lDAM)),SIRE)
+	DAM =c(rep(NA,(lSIRE+lDAM)),DAM)
+
+	thisData$animal = thisData$ID
+		
+	pedigree = cbind(ID,SIRE,DAM)
+			
+	#make weak, but informative priors for the fixed effect and a fixed matrix for the residual variance, because that needs to be fixed for binomial models
+	prior1 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior1_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002), G2 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	prior2 <- list(G = list(G1 = list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	prior3 <- list(G = list(G1 = list(V = 1, nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior3_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = 1, nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	prior3_RS_RS <- list(G = list(G1 = list(V = diag(2), nu = 0.002),G2 = list(V = diag(2), nu = 0.002), G3 =list(V = 1, nu = 0.002)),R = list(V = 1, nu = 0.002, fix = TRUE))
+	
+	#run MCMCglmm fitting random intercepts for animal, Culture and Block 
+	model1=MCMCglmm(cbind(Live,Dead)~ pH, random = ~animal+Block ,family="multinomial2",data = thisData,verbose = FALSE, nit = iterations, burnin = burnin, thin = thin, prior = prior1) 	
+	model1_RS = MCMCglmm(cbind(Live,Dead) ~ pH, random = ~us(pH):animal+Block ,family="multinomial2",data = thisData,verbose = FALSE, nit = iterations, burnin = burnin, thin = thin, prior = prior1_RS) 
+	model2=MCMCglmm(cbind(Live,Dead) ~ pH, random = ~animal ,family="multinomial2",data = thisData,verbose = FALSE, nit = iterations, burnin = burnin, thin = thin, prior = prior2) 	
+	model3 = MCMCglmm(cbind(Live,Dead) ~ pH, random = ~animal+Dam+Block,family="multinomial2",data = thisData,verbose = FALSE, nit = iterations, burnin = burnin, thin = thin, prior = prior3)
+	
+	model3_RS = MCMCglmm(cbind(Live,Dead) ~ pH, random = ~us(pH):animal+Dam+Block ,family="multinomial2",data = thisData,verbose = FALSE,nit = iterations, burnin = burnin, thin = thin, prior = prior3_RS)
+	model3_RS_RS = MCMCglmm(cbind(Live,Dead) ~ pH, random = ~us(pH):animal+us(pH):Dam+Block ,family="multinomial2",data = thisData,verbose = FALSE, nit = iterations, burnin = burnin, thin = thin, prior = prior3_RS_RS)
+	
+	
+	
+	modelList =list(model1,model1_RS,model2,model3,model3_RS,model3_RS_RS)
+	
+	return(modelList)
+}
+
+```
+
+## Read Data
+
+```{r read data, include=FALSE}
+size <- read.csv("Larvae data for MCMC_2.csv")
+
+surv = read.table("mortality_for_MCMC.txt",header =T)
+surv$Family = factor(surv$Family)
+surv$Culture = factor(surv$Culture)
+surv$Block = factor(surv$Block)
+surv$pH = factor(surv$pH)
+
+
+#convert numerics to factors
+size$Individual = factor(size$Individual)
+size$Family = factor(size$Family)
+size$Culture = factor(size$Culture)
+size$Block = factor(size$Block)
+size$pH = factor(size$pH)
+```
+
+## Larval size
+This fit larval size as a function of seawater acidification levels (i.e. pH = 8.1 or pH = 7.5) as fixed effects and “animal” (relatedness between individual larvae), “dam” (female parent), “block” (experimental block) and “culture” (replicate larval culture within each treatment and family) as random intercept effects. To test for family specific reaction norms between the different seawater acidification levels we also fit “animal” as a random slope and did the same for “dam”. We chose the best fitting model based on the respective Deviance Information Criterion (DIC). Only undeformed animals were used.
+
+```{r LengthModels normality}
+#remove deformed animals
+goodSize=subset(size,size$Malformed == 'no')
+
+#plot distribution with expected normal distribution
+p1 = ggplot(data = goodSize, aes(x = Length, group = pH, color = pH, fill = pH)) +
+  geom_density(alpha = 0.4) +
+  stat_function(fun = function(x) 
+    dnorm(x, mean = mean(goodSize$Length[goodSize$pH == 7.5]), sd = sd(goodSize$Length[goodSize$pH == 7.5])) , color = "red", linetype = 2, size = 1.5) +
+  stat_function(fun = function(x) 
+    dnorm(x, mean = mean(goodSize$Length[goodSize$pH == 8.1]), sd = sd(goodSize$Length[goodSize$pH == 8.1])) , color = "#00BFC4", linetype = 2, size = 1.5) +
+  theme_classic() +
+  labs(title = "Distribution", y= "Density")
+
+p2 = ggplot(data = goodSize, aes(sample = Length, group = pH, colour = pH, fill = pH)) +
+  geom_qq() +
+   geom_qq_line() +
+  theme_classic() +
+  labs(title = "QQ-plot", y= "observed", x = "theoretical quantiles")
+
+grid.arrange(p1,p2, nrow =1)
+
+#test for normality
+#within pH 7.5
+norm.test_7.5 = ks.test(goodSize$Length[goodSize$pH == 7.5], 'pnorm', 
+                        mean = mean(goodSize$Length[goodSize$pH == 7.5]),
+                                    sd= sd(goodSize$Length[goodSize$pH == 7.5]))
+print(norm.test_7.5)
+
+#within ph 8.1
+norm.test_8.1 = ks.test(goodSize$Length[goodSize$pH == 8.1], 'pnorm', 
+                        mean = mean(goodSize$Length[goodSize$pH == 8.1]),
+                                    sd= sd(goodSize$Length[goodSize$pH == 8.1]))
+print(norm.test_8.1)
+
+```
+
+```{r LengthModels runModel, include = F}
+
+LengthModels = makeMCMC_gaussian_with_pH(goodSize)
+
+#give Model Fit
+for(i in 1:length(LengthModels))
+{
+	print('######################################################################################################
+')
+	print(paste(c('Model:',i)))
+	print(summary(LengthModels[[i]]))
+}
+
+
+#calculate models for Length as a response within each pH environment
+
+lowpH = subset(goodSize, goodSize$pH == 7.5)
+
+LengthModels_7.5 = makeMCMC_gaussian(lowpH)
+
+#give Model Fit
+for(i in 1:4)
+{
+	print('######################################################################################################')
+	print(paste(c('Model:',i)))
+	print(summary(LengthModels_7.5[[i]]))
+}
+
+
+#now for 8.1
+highpH = subset(goodSize, goodSize$pH == 8.1)
+
+LengthModels_8.1 = makeMCMC_gaussian(highpH)
+
+#give Model Fit
+for(i in 1:4)
+{
+	print('######################################################################################################')
+	print(paste(c('Model:',i)))
+	print(summary(LengthModels_8.1[[i]]))
+}
+
+
+best_RS_Model = LengthModels[[5]]
+best_75_Model = LengthModels_7.5[[2]]
+best_81_Model = LengthModels_8.1[[2]]
+
+
+
+autocorr.diag(best_RS_Model$Sol)
+autocorr.diag(best_RS_Model$VCV)
+#test convergence
+heidel.diag(best_RS_Model$VCV)
+
+h2_RS_75 = best_RS_Model$VCV[,'pH7.5:pH7.5.animal']/(best_RS_Model$VCV[,'pH7.5:pH7.5.animal']+best_RS_Model$VCV[,'pH8.1:pH7.5.animal']+best_RS_Model$VCV[,'pH8.1:pH8.1.animal']+best_RS_Model$VCV[,'Block']+best_RS_Model$VCV[,'Culture']+best_RS_Model$VCV[,'units'])
+h2_RS_81 = best_RS_Model$VCV[,'pH8.1:pH8.1.animal']/(best_RS_Model$VCV[,'pH7.5:pH7.5.animal']+best_RS_Model$VCV[,'pH8.1:pH7.5.animal']+best_RS_Model$VCV[,'pH8.1:pH8.1.animal']+best_RS_Model$VCV[,'Block']+best_RS_Model$VCV[,'Culture']+best_RS_Model$VCV[,'units'])
+h2_75 = best_75_Model$VCV[,'animal']/(best_75_Model$VCV[,'animal']+best_75_Model$VCV[,'Block']+best_75_Model$VCV[,'Culture']+best_75_Model$VCV[,'units'])
+h2_81 = best_81_Model$VCV[,'animal']/(best_81_Model$VCV[,'animal']+best_81_Model$VCV[,'Block']+best_81_Model$VCV[,'Culture']+best_81_Model$VCV[,'units'])
+
+posterior.mode(h2_RS_75)
+posterior.mode(h2_RS_81)
+posterior.mode(h2_75)
+posterior.mode(h2_81)
+
+HPDinterval(h2_RS_75)
+HPDinterval(h2_RS_81)
+HPDinterval(h2_75)
+HPDinterval(h2_81)
+
+posterior.mode(best_RS_Model$VCV[,'pH7.5:pH7.5.animal'])
+HPDinterval(best_RS_Model$VCV[,'pH7.5:pH7.5.animal'])
+
+posterior.mode(best_RS_Model$VCV[,'pH8.1:pH8.1.animal'])
+HPDinterval(best_RS_Model$VCV[,'pH8.1:pH8.1.animal'])
+
+posterior.mode(best_RS_Model$VCV[,'pH7.5:pH8.1.animal'])
+HPDinterval(best_RS_Model$VCV[,'pH7.5:pH8.1.animal'])
+
+posterior.mode(best_RS_Model$VCV[,'Culture'])
+HPDinterval(best_RS_Model$VCV[,'Culture'])
+
+posterior.mode(best_RS_Model$VCV[,'Block'])
+HPDinterval(best_RS_Model$VCV[,'Block'])
+
+posterior.mode(best_RS_Model$VCV[,'units'])
+HPDinterval(best_RS_Model$VCV[,'units'])
+
+
+posterior.mode(best_75_Model$VCV[,'animal'])
+HPDinterval(best_75_Model$VCV[,'animal'])
+
+posterior.mode(best_75_Model$VCV[,'Culture'])
+HPDinterval(best_75_Model$VCV[,'Culture'])
+
+posterior.mode(best_75_Model$VCV[,'Block'])
+HPDinterval(best_75_Model$VCV[,'Block'])
+
+posterior.mode(best_75_Model$VCV[,'units'])
+HPDinterval(best_75_Model$VCV[,'units'])
+
+posterior.mode(best_81_Model$VCV[,'animal'])
+HPDinterval(best_81_Model$VCV[,'animal'])
+
+posterior.mode(best_81_Model$VCV[,'Culture'])
+HPDinterval(best_81_Model$VCV[,'Culture'])
+
+posterior.mode(best_81_Model$VCV[,'Block'])
+HPDinterval(best_81_Model$VCV[,'Block'])
+
+posterior.mode(best_81_Model$VCV[,'units'])
+HPDinterval(best_81_Model$VCV[,'units'])
+
+
+plot(best_RS_Model$VCV[,'pH7.5:pH7.5.animal'], main = 'animal RS', ylim = c(0,5))
+plot(best_81_Model$VCV[,'animal'], main = 'animal')
+```
+
+## Larval Deformation 
+This fits a bionmial model analysing deformation as a function of pH, and “animal” (relatedness between individual larvae), “dam” (female parent), “block” (experimental block) and “culture” (replicate larval culture within each treatment and family) as random intercept effects.
+
+```{r deformation }
+DeformModels = makeMCMC_binomial(size)
+#give Model Fit
+for(i in 1:length(DeformModels))
+{
+	print('######################################################################################################
+')
+	print(paste(c('Model:',i)))
+	print(summary(DeformModels[[i]]))
+}
+
+bestDeformedModel = DeformModels[[7]]
+
+
+h2_def_75 = bestDeformedModel$VCV[,'pH7.5:pH7.5.animal']/(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH8.1.animal']+bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam']+bestDeformedModel$VCV[,'Block']+bestDeformedModel$VCV[,'Culture']+bestDeformedModel$VCV[,'units']+1)
+h2_def_81 = bestDeformedModel$VCV[,'pH8.1:pH8.1.animal']/(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH8.1.animal']+bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam']+bestDeformedModel$VCV[,'Block']+bestDeformedModel$VCV[,'Culture']+bestDeformedModel$VCV[,'units']+1)
+
+
+d2_def_75 = bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam']/(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH8.1.animal']+bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam']+bestDeformedModel$VCV[,'Block']+bestDeformedModel$VCV[,'Culture']+bestDeformedModel$VCV[,'units']+1)
+d2_def_81 = bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam']/(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH7.5.animal']+bestDeformedModel$VCV[,'pH8.1:pH8.1.animal']+bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH7.5.Dam']+bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam']+bestDeformedModel$VCV[,'Block']+bestDeformedModel$VCV[,'Culture']+bestDeformedModel$VCV[,'units']+1)
+
+
+posterior.mode(h2_def_75)
+posterior.mode(h2_def_81)
+
+HPDinterval(h2_def_75)
+HPDinterval(h2_def_81)
+
+
+posterior.mode(d2_def_75)
+posterior.mode(d2_def_81)
+
+HPDinterval(d2_def_75)
+HPDinterval(d2_def_81)
+
+posterior.mode(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal'])
+HPDinterval(bestDeformedModel$VCV[,'pH7.5:pH7.5.animal'])
+
+posterior.mode(bestDeformedModel$VCV[,'pH8.1:pH8.1.animal'])
+HPDinterval(bestDeformedModel$VCV[,'pH8.1:pH8.1.animal'])
+
+posterior.mode(bestDeformedModel$VCV[,'pH7.5:pH8.1.animal'])
+HPDinterval(bestDeformedModel$VCV[,'pH7.5:pH8.1.animal'])
+
+posterior.mode(bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam'])
+HPDinterval(bestDeformedModel$VCV[,'pH7.5:pH7.5.Dam'])
+
+posterior.mode(bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam'])
+HPDinterval(bestDeformedModel$VCV[,'pH8.1:pH8.1.Dam'])
+
+posterior.mode(bestDeformedModel$VCV[,'pH7.5:pH8.1.Dam'])
+HPDinterval(bestDeformedModel$VCV[,'pH7.5:pH8.1.Dam'])
+
+
+posterior.mode(bestDeformedModel$VCV[,'Culture'])
+HPDinterval(bestDeformedModel$VCV[,'Culture'])
+
+posterior.mode(bestDeformedModel$VCV[,'Block'])
+HPDinterval(bestDeformedModel$VCV[,'Block'])
+
+posterior.mode(bestDeformedModel$VCV[,'units'])
+HPDinterval(bestDeformedModel$VCV[,'units'])
+
+
+```
+
+## Surivival 
+This fits a bionmial model analysing deformation as a function of pH, and “animal” (relatedness between individual larvae), “dam” (female parent), “block” (experimental block) and “culture” (replicate larval culture within each treatment and family) as random intercept effects.
+
+
+
+```{r survival}
+survMCMC = makeMCMC_binomial_surv(surv)
+for(i in 1:length(survMCMC))
+{
+	print('######################################################################################################
+')
+	print(paste(c('Model:',i)))
+	print(summary(survMCMC[[i]]))
+}
+bestSurvMod = survMCMC[[4]]
+plot(bestSurvMod$VCV)
+
+autocorr.diag(bestSurvMod$Sol)
+autocorr.diag(bestSurvMod$VCV)
+#test convergence
+heidel.diag(bestSurvMod$VCV)
+
+h2_surv = bestSurvMod$VCV[,'animal']/(bestSurvMod$VCV[,'animal']+bestSurvMod$VCV[,'Dam']+bestSurvMod$VCV[,'Block']+bestSurvMod$VCV[,'units']+1)
+posterior.mode(h2_surv)
+HPDinterval(h2_surv)
+
+d2_surv = bestSurvMod$VCV[,'Dam']/(bestSurvMod$VCV[,'animal']+bestSurvMod$VCV[,'Dam']+bestSurvMod$VCV[,'Block']+bestSurvMod$VCV[,'units']+1)
+posterior.mode(d2_surv)
+HPDinterval(d2_surv)
+
+posterior.mode(bestSurvMod$VCV[,'animal'])
+HPDinterval(bestSurvMod$VCV[,'animal'])
+
+posterior.mode(bestSurvMod$VCV[,'Dam'])
+HPDinterval(bestSurvMod$VCV[,'Dam'])
+
+posterior.mode(bestSurvMod$VCV[,'Block'])
+HPDinterval(bestSurvMod$VCV[,'Block'])
+
+
+
+
+```
+
+
